@@ -34,6 +34,7 @@ nuarr  = const.c.to('micron/s').value / wavarr
 
 Tstar  = 8590
 Rstar  = 1.842
+Mstar  = 1.92
 
 Fstar  = { '10': FluxDensity( nuarr, Tstar, Rstar, 10 ), '130': FluxDensity( nuarr, Tstar, Rstar, 130 ) }
 
@@ -46,84 +47,157 @@ plt.ylabel( 'Flux Density (Jy)' )
 plt.xlabel( 'Wavelength ($\mu$m)' )
 plt.savefig( 'StellarSpec.pdf' )
 
-plt.clf()
-plt.loglog( wavarr, FluxDensity( nuarr, Tstar, Rstar, 7.66 * u.pc.to('au' ) ), 'k-' )
-plt.xlim( 0.1, 100 )
-plt.show()
-
 ### Question 2 ###
 
 class DustProperties():
 
-    def __init__( self, Tstar, Rstar, a, Rg, rhog ):
+    def __init__( self, Tstar, Rstar, Mstar, a, strRg, Qdict, rhog ):
 
         self.Tstar = Tstar
         self.Rstar = Rstar
+        self.Mstar = Mstar
         self.a     = a
-        self.Rg    = Rg
+        self.strRg = strRg
+        self.Qdict = Qdict
         self.rhog  = rhog
 
+        self.Rg    = float( self.strRg ) * 1e-4
+        self.Qwav  = Qdict['wav']
+        self.Qvals = Qdict[self.strRg]
         self.mg    = 4. / 3. * np.pi * self.Rg ** 3.0 * self.rhog
 
-    def getQ( self, wav, Qwav, Qvals ):
+        self.dist  = 7.88 * u.pc.to('cm')
 
-        Qfit = interpolate.interp1d( Qwav, Qvals )
+    def interpQ( self, wav ):
+
+        Qfit = interpolate.interp1d( self.Qwav, self.Qvals )
 
         return Qfit( wav )
 
-    def PowerAbsorbed( self, wav, Qwav, Qvals ):
+    def PowerAbsorbed( self, wav ):
 
         nu   = const.c.to('micron/s').value / wav
         flux = FluxDensity( nu, self.Tstar, self.Rstar, self.a ) / 1e23
-        Qarr = self.getQ( wav, Qwav, Qvals )
+        Qarr = self.interpQ( wav )
 
         return np.pi * self.Rg ** 2.0 * np.trapz( flux * Qarr, x = -nu )
 
-    def EquilibriumTemp( self, wav, Qwav, Qvals ):
+    def EquilibriumTemp( self, wav ):
 
-        Pabs = self.PowerAbsorbed( wav, Qwav, Qvals )
+        Pabs = self.PowerAbsorbed( wav )
         Td   = ( Pabs / ( 4 * np.pi * self.Rg ** 2.0 * SBcgs ) ) ** 0.25
+        L    = 4 * np.pi * self.Rg ** 2.0 * SBcgs * Td ** 4.0
         
-        return Td
+        return Td, L
 
-    def EmissionSpectrum( self, wav, Qwav, Qvals ):
+    def EmissionSpectrum( self, wav ):
 
-        Td = self.EquilibriumTemp( wav, Qwav, Qvals )
+        Td = self.EquilibriumTemp( wav )[0]
 
-        return np.pi * Blackbody( const.c.to('micron/s').value / wav, Td ) * self.getQ( wav, Qwav, Qvals )
+        return np.pi * Blackbody( const.c.to('micron/s').value / wav, Td ) * self.interpQ( wav )
 
-Qvals = pd.read_csv( 'Qvalues.csv' )
+    def NumGrains( self, wav, Fdisk, wavpt ):
 
-dust_tenth_10 = DustProperties( Tstar, Rstar, 10, 0.1e-4 )
-dust_one_10   = DustProperties( Tstar, Rstar, 10, 1e-4 )
-dust_ten_10   = DustProperties( Tstar, Rstar, 10, 10e-4 )
+        Fdust = self.EmissionSpectrum( wav )
 
-dust_tenth_130 = DustProperties( Tstar, Rstar, 130, 0.1e-4 )
-dust_one_130   = DustProperties( Tstar, Rstar, 130, 1e-4 )
-dust_ten_130   = DustProperties( Tstar, Rstar, 130, 10e-4 )
+        Fdisk /= self.Rg ** 2.0
+
+        return Fdisk / interpolate.interp1d( wav, Fdust )(wavpt)
+
+    def DiskMass( self, wav, Fdisk, wavpt ):
+
+        Ng = self.NumGrains( wav, Fdisk, wavpt )
+
+        return self.mg * Ng * u.g.to('earthMass')
+
+    def RadPressure( self, wav ):
+
+        return self.PowerAbsorbed( wav ) / const.c.cgs.value
+
+    def PRdrag( self, wav ):
+
+        return 2 * np.pi / const.c.to('au/yr').value ** 2.0 * np.sqrt( self.Mstar / self.a ) * self.PowerAbsorbed( wav )
+
+Qdict = pd.read_csv( 'Qvalues.csv' )
+rhod  = 2.0 # g per cc
+
+dust_tenth_10 = DustProperties( Tstar, Rstar, Mstar, 10, '0.1', Qdict, rhod )
+dust_one_10   = DustProperties( Tstar, Rstar, Mstar, 10, '1', Qdict, rhod )
+dust_ten_10   = DustProperties( Tstar, Rstar, Mstar, 10, '10', Qdict, rhod )
+dust_perf_10  = DustProperties( Tstar, Rstar, Mstar, 10, '1000', Qdict, rhod )
+
+dust_tenth_130 = DustProperties( Tstar, Rstar, Mstar, 130, '0.1', Qdict, rhod )
+dust_one_130   = DustProperties( Tstar, Rstar, Mstar, 130, '1', Qdict, rhod )
+dust_ten_130   = DustProperties( Tstar, Rstar, Mstar, 130, '10', Qdict, rhod )
+dust_perf_130  = DustProperties( Tstar, Rstar, Mstar, 130, '1000', Qdict, rhod )
 
 ## Question 3 ###
 
-Fdust_10 = { '0.1': dust_tenth_10.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['0.1'] ),
-             '1.0': dust_one_10.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['1.0'] ),
-             '10.0': dust_ten_10.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['10.0'] ) }
+print dust_tenth_10.EquilibriumTemp( wavarr )
+print dust_tenth_130.EquilibriumTemp( wavarr )
 
-Fdust_130 = { '0.1': dust_tenth_130.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['0.1'] ),
-             '1.0': dust_one_130.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['1.0'] ),
-             '10.0': dust_ten_130.EmissionSpectrum( wavarr, Qvals['wav'], Qvals['10.0'] ) }
-    
+print dust_one_10.EquilibriumTemp( wavarr )
+print dust_one_130.EquilibriumTemp( wavarr )
+
+print dust_ten_10.EquilibriumTemp( wavarr )
+print dust_ten_130.EquilibriumTemp( wavarr )
+
+print dust_perf_10.EquilibriumTemp( wavarr )
+print dust_perf_130.EquilibriumTemp( wavarr )
+
+Fdust_10 = { '0.1': dust_tenth_10.EmissionSpectrum( wavarr ), '1': dust_one_10.EmissionSpectrum( wavarr ),
+             '10': dust_ten_10.EmissionSpectrum( wavarr ), '1000': dust_perf_10.EmissionSpectrum( wavarr ) }
+
+Fdust_130 = { '0.1': dust_tenth_130.EmissionSpectrum( wavarr ), '1': dust_one_130.EmissionSpectrum( wavarr ),
+             '10': dust_ten_130.EmissionSpectrum( wavarr ), '1000': dust_perf_130.EmissionSpectrum( wavarr ) }
+
 plt.clf()
 plt.loglog( wavarr, Fdust_10['0.1'], 'k-' )
-plt.loglog( wavarr, Fdust_10['1.0'], 'b-' )
-plt.loglog( wavarr, Fdust_10['10.0'], 'r-' )
+plt.loglog( wavarr, Fdust_10['1'], 'b-' )
+plt.loglog( wavarr, Fdust_10['10'], 'r-' )
+plt.loglog( wavarr, Fdust_10['1000'], 'g-' )
 plt.xlim( 5.0, 1000.0 ); plt.ylim( 1e4, 1e16 )
+plt.legend( ( '0.1 $\mu$m', '1 $\mu$m', '10 $\mu$m', '1 mm' ) )
 plt.savefig('DustSpectrum_10au.pdf')
 
 plt.clf()
 plt.loglog( wavarr, Fdust_130['0.1'], 'k-' )
-plt.loglog( wavarr, Fdust_130['1.0'], 'b-' )
-plt.loglog( wavarr, Fdust_130['10.0'], 'r-' )
+plt.loglog( wavarr, Fdust_130['1'], 'b-' )
+plt.loglog( wavarr, Fdust_130['10'], 'r-' )
+plt.loglog( wavarr, Fdust_130['1000'], 'g-' )
 plt.xlim( 5.0, 1000.0 ); plt.ylim( 1e4, 1e16 )
+plt.legend( ( '0.1 $\mu$m', '1 $\mu$m', '10 $\mu$m', '1 mm' ), loc = 'upper left' )
 plt.savefig('DustSpectrum_130au.pdf')
 
 ### Question 4 ###
+
+# From Kate Su's 2013 paper
+
+# For the inner, hotter disk
+Fdisk_30um = 5e46 / 0.1 ** 2.0
+
+print dust_tenth_10.NumGrains( wavarr, 5e38, 30 )
+print dust_one_10.NumGrains( wavarr, 5e38, 30 )
+print dust_ten_10.NumGrains( wavarr, 5e38, 30 )
+print dust_perf_10.NumGrains( wavarr, 5e38, 30 )
+
+print dust_tenth_10.DiskMass( wavarr, 5e38, 30 )
+print dust_one_10.DiskMass( wavarr, 5e38, 30 )
+print dust_ten_10.DiskMass( wavarr, 5e38, 30 )
+print dust_perf_10.DiskMass( wavarr, 5e38, 30 )
+
+# For the outer, cooler disk
+Fdisk_100um = 6e47 / 10.0 ** 2.0
+
+print dust_tenth_130.NumGrains( wavarr, 6e39, 100 )
+print dust_one_130.NumGrains( wavarr, 6e39, 100 )
+print dust_ten_130.NumGrains( wavarr, 6e39, 100 )
+print dust_perf_130.NumGrains( wavarr, 6e39, 100 )
+
+print dust_tenth_130.DiskMass( wavarr, 6e39, 100 )
+print dust_one_130.DiskMass( wavarr, 6e39, 100 )
+print dust_ten_130.DiskMass( wavarr, 6e39, 100 )
+print dust_perf_130.DiskMass( wavarr, 6e39, 100 )
+
+print dust_one_10.RadPressure( wavarr )
+print dust_one_10.PRdrag( wavarr )
